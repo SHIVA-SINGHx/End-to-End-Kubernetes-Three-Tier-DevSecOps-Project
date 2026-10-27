@@ -6,7 +6,7 @@ class App extends Tasks {
     state = { tasks: [], currentTask: "", filter: "all" };
 
     render() {
-        const { tasks, currentTask, filter } = this.state;
+        const { tasks, currentTask, filter, error, isSubmitting } = this.state;
         const completedCount = tasks.filter((task) => task.completed).length;
         const remainingCount = tasks.length - completedCount;
         const completionRate = tasks.length
@@ -76,14 +76,16 @@ class App extends Tasks {
                             onChange={this.handleChange}
                             placeholder="What needs your attention?"
                             aria-label="New task"
+                            aria-describedby={error ? "task-form-error" : undefined}
                         />
-                        <button className="add-task-btn" type="submit">
-                            <span>Add task</span>
+                        <button className="add-task-btn" type="submit" disabled={isSubmitting}>
+                            <span>{isSubmitting ? "Saving..." : "Add task"}</span>
                             <svg viewBox="0 0 20 20" aria-hidden="true">
                                 <path d="M4 10h12m-5-5 5 5-5 5" />
                             </svg>
                         </button>
                     </form>
+                    {error && <p className="task-form-error" id="task-form-error" role="alert">{error}</p>}
 
                     <div className="list-toolbar">
                         <div className="filter-tabs" role="group" aria-label="Filter tasks">

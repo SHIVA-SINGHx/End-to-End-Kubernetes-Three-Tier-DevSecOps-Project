@@ -7,31 +7,49 @@ import {
 } from "./services/taskServices";
 
 class Tasks extends Component {
-    state = { tasks: [], currentTask: "" };
+    state = { tasks: [], currentTask: "", error: "", isSubmitting: false };
 
     async componentDidMount() {
         try {
             const { data } = await getTasks();
             this.setState({ tasks: data });
         } catch (error) {
-            console.log(error);
+            this.setState({
+                error: "Could not load tasks. Check that the backend and MongoDB are running.",
+            });
         }
     }
 
     handleChange = ({ currentTarget: input }) => {
-        this.setState({ currentTask: input.value });
+        this.setState({ currentTask: input.value, error: "" });
     };
 
     handleSubmit = async (e) => {
         e.preventDefault();
-        const originalTasks = this.state.tasks;
+        const taskText = this.state.currentTask.trim();
+        if (!taskText) {
+            this.setState({ error: "Enter a task before adding it." });
+            return;
+        }
+
+        this.setState({ error: "", isSubmitting: true });
         try {
-            const { data } = await addTask({ task: this.state.currentTask });
-            const tasks = originalTasks;
-            tasks.push(data);
-            this.setState({ tasks, currentTask: "" });
+            const { data } = await addTask({ task: taskText });
+            if (!data || !data._id || typeof data.task !== "string") {
+                throw new Error("The server returned an invalid task.");
+            }
+            this.setState((state) => ({
+                tasks: [...state.tasks, data],
+                currentTask: "",
+                error: "",
+                isSubmitting: false,
+            }));
         } catch (error) {
-            console.log(error);
+            const responseMessage = error.response && error.response.data
+                ? error.response.data.message
+                : "";
+            const message = responseMessage || "Could not save the task. Check that the backend and MongoDB are running.";
+            this.setState({ error: message, isSubmitting: false });
         }
     };
 
