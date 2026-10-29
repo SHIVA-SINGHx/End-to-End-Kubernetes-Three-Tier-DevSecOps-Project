@@ -1,0 +1,286 @@
+pipeline {
+    agent any
+
+    tools {
+        jdk 'jdk'
+        nodejs 'nodejs'
+    }
+
+    environment {
+        SCANNER_HOME = tool 'sonar-scanner'
+
+        AWS_ACCOUNT_ID = credentials('AWS-ACC-ID')
+        AWS_ECR_REPO_NAME = credentials('ECR-BACKEND')
+        AWS_DEFAULT_REGION = 'us-east-1'
+
+        ECR_REGISTRY = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+        REPOSITORY_URI = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}"
+    }
+
+    stages {
+
+        stage('Cleaning Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+
+        stage('Checkout from Git') {
+            steps {
+                git branch: 'main',
+                    credentialsId: 'GITHUB',
+                    url: 'https://github.com/SHIVA-SINGHx/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project.git'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                dir('Application-Code/backend') {
+                    withSonarQubeEnv('sonar-server') {
+                        sh '''
+                            set -eu
+                            "$SCANNER_HOME/bin/sonar-scanner" \
+                                -Dsonar.projectName=three-tier-backend \
+                                -Dsonar.projectKey=three-tier-backend
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Quality Check') {
+            steps {
+                script {
+                    waitForQualityGate(
+                        abortPipeline: false,
+                        credentialsId: 'sonar-token-1'
+                    )
+                }
+            }
+        }
+
+
+
+
+stage('OWASP Dependency-Check Scan') {
+    steps {
+        dir('Application-Code/backend') {
+            withCredentials([
+                string(
+                    credentialsId: 'NVD_API_KEY',
+                    variable: 'NVD_API_KEY'
+                )
+            ]) {
+                sh '''
+                    set -eu
+
+                    echo "=== Checking Java ==="
+                    java -version
+
+                    echo "=== Getting Dependency-Check Version ==="
+                    VERSION=$(curl -fsSL --retry 3 \
+                        https://dependency-check.github.io/DependencyCheck/current.txt)
+
+                    echo "Using version: $VERSION"
+
+                    echo "=== Downloading Scanner ==="
+                    rm -rf dependency-check dependency-check.zip
+                    rm -f dependency-check-report.xml
+
+                    curl -fL --retry 3 \
+                        "https://github.com/dependency-check/DependencyCheck/releases/download/v${VERSION}/dependency-check-${VERSION}-release.zip" \
+                        -o dependency-check.zip
+
+                    echo "=== Validating ZIP ==="
+                    unzip -tq dependency-check.zip
+
+                    echo "=== Extracting Scanner ==="
+                    unzip -q dependency-check.zip
+                    rm -f dependency-check.zip
+
+                    SCANNER="./dependency-check/bin/dependency-check.sh"
+
+                    if [ ! -f "$SCANNER" ]; then
+                        echo "ERROR: Scanner script not found after extraction"
+                        find . -maxdepth 5 -name dependency-check.sh
+                        exit 1
+                    fi
+
+                    echo "=== Running Dependency Scan ==="
+                    chmod +x "$SCANNER"
+
+                    "$SCANNER" \
+                        --project "three-tier-backend" \
+                        --scan . \
+                        --nvdApiKey "$NVD_API_KEY" \
+                        --format XML \
+                        --out .
+
+                    echo "=== Verifying Report ==="
+                    test -s dependency-check-report.xml
+
+                    echo "OWASP scan completed successfully"
+                '''
+            }
+
+            dependencyCheckPublisher(
+                pattern: '**/dependency-check-report.xml'
+            )
+        }
+    }
+}
+
+
+
+
+        stage('Trivy File Scan') {
+            steps {
+                dir('Application-Code/backend') {
+                    sh '''
+                        set -eu
+                        trivy --version
+                        trivy fs --scanners vuln,misconfig,secret . \
+                            > trivyfs.txt 2>&1
+                    '''
+
+                    archiveArtifacts(
+                        artifacts: 'trivyfs.txt',
+                        allowEmptyArchive: true
+                    )
+                }
+            }
+        }
+
+stage('Docker Build') {
+    steps {
+        dir('Application-Code/backend') {
+            sh '''
+                set -eu
+                docker --version
+                docker build -t "$REPOSITORY_URI:$BUILD_NUMBER" .
+            '''
+        }
+    }
+}
+
+        stage('ECR Image Pushing') {
+            steps {
+                sh '''
+                    set -eu
+
+                    echo "=== Logging in to AWS ECR ==="
+
+                    aws ecr get-login-password \
+                        --region "$AWS_DEFAULT_REGION" |
+                    docker login \
+                        --username AWS \
+                        --password-stdin "$ECR_REGISTRY"
+
+                    echo "=== Tagging Image ==="
+
+                    docker tag "$AWS_ECR_REPO_NAME" \
+                        "$REPOSITORY_URI:$BUILD_NUMBER"
+
+                    echo "=== Pushing Image ==="
+
+                    docker push "$REPOSITORY_URI:$BUILD_NUMBER"
+                '''
+            }
+        }
+
+        stage('TRIVY Image Scan') {
+            steps {
+                sh '''
+                    set -eu
+
+                    trivy image \
+                        --scanners vuln,misconfig,secret \
+                        "$REPOSITORY_URI:$BUILD_NUMBER" \
+                        > trivyimage.txt 2>&1
+                '''
+
+                archiveArtifacts(
+                    artifacts: 'trivyimage.txt',
+                    allowEmptyArchive: true
+                )
+            }
+        }
+
+        stage('Checkout Code') {
+            steps {
+                git branch: 'main',
+                    credentialsId: 'GITHUB',
+                    url: 'https://github.com/SHIVA-SINGHx/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project.git'
+            }
+        }
+
+        stage('Update Deployment file') {
+            environment {
+                GIT_REPO_NAME = 'End-to-End-Kubernetes-Three-Tier-DevSecOps-Project'
+                GIT_USER_NAME = 'SHIVA-SINGHx'
+            }
+
+stage('Update Deployment file') {
+    environment {
+        GIT_REPO_NAME = 'End-to-End-Kubernetes-Three-Tier-DevSecOps-Project'
+        GIT_USER_NAME = 'SHIVA-SINGHx'
+    }
+
+    steps {
+        dir('Kubernetes-Manifests-file/Backend') {
+            withCredentials([
+                string(
+                    credentialsId: 'github-token',
+                    variable: 'GITHUB_TOKEN'
+                )
+            ]) {
+                sh '''
+                    set -eu
+
+                    git config user.email "shivakumar110045@k@gmail.com"
+                    git config user.name "$GIT_USER_NAME"
+
+                    echo "=== Updating Backend Image Tag ==="
+
+                    if ! grep -q "backend:" deployment.yaml; then
+                        echo "ERROR: backend image reference not found"
+                        exit 1
+                    fi
+
+                    sed -i \
+                        "s|\\(backend:\\)[^[:space:]]*|\\1${BUILD_NUMBER}|" \
+                        deployment.yaml
+
+                    git add deployment.yaml
+
+                    if git diff --cached --quiet; then
+                        echo "No deployment changes to commit"
+                        exit 0
+                    fi
+
+                    git commit -m "Update deployment image to build ${BUILD_NUMBER}"
+
+                    git push \
+                        "https://${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}.git" \
+                        HEAD:main
+                '''
+            }
+        }
+    }
+}
+    }
+
+    post {
+        success {
+            echo 'Pipeline completed successfully!'
+        }
+
+        failure {
+            echo 'Pipeline failed. Check Console Output for the failing stage.'
+        }
+
+        always {
+            echo 'Jenkins pipeline execution finished.'
+        }
+    }
+}
